@@ -128,6 +128,8 @@ Use `--disable_normalize` to keep original mesh scale/position.
 Notes:
 
 - `image` supports relative paths under `data_root`
+- Generated view RGB images are saved to `data/images_rgb/`
+- Generated silhouette masks are saved to `data/images/` (used by current training)
 - `R` is a 3x3 world-to-view rotation matrix
 - `T` is a 3D translation vector
 - Image will be loaded as grayscale silhouette target

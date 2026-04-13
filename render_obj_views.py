@@ -7,12 +7,14 @@ from PIL import Image
 import trimesh
 from pytorch3d.io import load_objs_as_meshes
 from pytorch3d.renderer import (
-    BlendParams,
     FoVPerspectiveCameras,
+    HardPhongShader,
     MeshRasterizer,
     MeshRenderer,
+    PointLights,
     RasterizationSettings,
     SoftSilhouetteShader,
+    TexturesVertex,
     look_at_view_transform,
 )
 from pytorch3d.structures import Meshes
@@ -68,13 +70,17 @@ def main() -> None:
 
     output_dir = Path(args.output_dir).resolve()
     images_dir = output_dir / "images"
+    rgb_dir = output_dir / "images_rgb"
     images_dir.mkdir(parents=True, exist_ok=True)
+    rgb_dir.mkdir(parents=True, exist_ok=True)
 
     mesh = load_mesh(mesh_path, device=device)
     if not args.disable_normalize:
         mesh = normalize_mesh(mesh)
+    if mesh.textures is None:
+        verts_features = [torch.ones_like(v, device=device) for v in mesh.verts_list()]
+        mesh = Meshes(verts=mesh.verts_list(), faces=mesh.faces_list(), textures=TexturesVertex(verts_features))
 
-    blend_params = BlendParams(sigma=1e-4, gamma=1e-4)
     raster_settings = RasterizationSettings(
         image_size=(args.image_height, args.image_width),
         blur_radius=0.0,
@@ -82,10 +88,15 @@ def main() -> None:
         bin_size=args.bin_size,
         max_faces_per_bin=args.max_faces_per_bin,
     )
-    renderer = MeshRenderer(
+    rgb_renderer = MeshRenderer(
         rasterizer=MeshRasterizer(raster_settings=raster_settings),
-        shader=SoftSilhouetteShader(blend_params=blend_params),
+        shader=HardPhongShader(device=device),
     )
+    mask_renderer = MeshRenderer(
+        rasterizer=MeshRasterizer(raster_settings=raster_settings),
+        shader=SoftSilhouetteShader(),
+    )
+    lights = PointLights(device=device, location=[[2.0, 2.0, -2.0]])
 
     azims = torch.linspace(0.0, 360.0, steps=args.num_views + 1)[:-1]
     views = []
@@ -94,17 +105,22 @@ def main() -> None:
         r, t = look_at_view_transform(dist=args.dist, elev=args.elev, azim=azim, device=device)
         cameras = FoVPerspectiveCameras(R=r, T=t, fov=args.fov, device=device)
 
-        rendered = renderer(meshes_world=mesh, cameras=cameras)
+        rgb = rgb_renderer(meshes_world=mesh, cameras=cameras, lights=lights)[0, ..., :3].clamp(0.0, 1.0)
+        rendered = mask_renderer(meshes_world=mesh, cameras=cameras)
         mask = rendered[0, ..., 3].clamp(0.0, 1.0)
+        rgb_u8 = (rgb.detach().cpu().numpy() * 255.0).astype("uint8")
         mask_u8 = (mask.detach().cpu().numpy() * 255.0).astype("uint8")
 
         image_name = f"view_{idx:03d}.png"
         image_path = images_dir / image_name
+        rgb_path = rgb_dir / image_name
         Image.fromarray(mask_u8, mode="L").save(image_path)
+        Image.fromarray(rgb_u8, mode="RGB").save(rgb_path)
 
         views.append(
             {
                 "image": f"images/{image_name}",
+                "rgb_image": f"images_rgb/{image_name}",
                 "R": r[0].detach().cpu().tolist(),
                 "T": t[0].detach().cpu().tolist(),
             }
@@ -122,6 +138,7 @@ def main() -> None:
 
     print(f"saved: {views_path}")
     print(f"saved images: {images_dir}")
+    print(f"saved rgb images: {rgb_dir}")
     print(f"normalize mesh: {not args.disable_normalize}")
 
 
