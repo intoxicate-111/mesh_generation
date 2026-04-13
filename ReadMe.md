@@ -74,6 +74,20 @@ Requirements:
 - PyTorch ≥ 2.x
 - CUDA (recommended)
 
+Run training:
+
+```bash
+cd project
+python -m training.train
+```
+
+Saved outputs (auto-generated):
+
+- `project/outputs/target.pt`
+- `project/outputs/checkpoint_final.pt`
+- `project/outputs/masks_final.pt`
+- `project/outputs/loss_history.csv`
+
 ## 📌 Modules
 
 ### 1. Point Representation
@@ -157,12 +171,15 @@ Stage 1 (required):
 Stage 2 (optional):
 
 - Build edges from candidate graph
+- Implemented helper: `build_edges_from_candidate_graph(...)`
 
 Triangle score:
 
 $$
 S_{ijk} = S_{ij}S_{jk}S_{ki}
 $$
+
+- Implemented helper: `triangle_scores_from_edge_matrix(...)`
 
 ### 5. Rendering (PyTorch3D)
 
