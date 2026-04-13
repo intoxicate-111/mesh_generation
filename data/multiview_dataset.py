@@ -8,15 +8,16 @@ from PIL import Image
 from pytorch3d.renderer import FoVPerspectiveCameras
 
 
-def _load_mask(image_path: Path, image_size: int, device: str) -> torch.Tensor:
-    image = Image.open(image_path).convert("L").resize((image_size, image_size), Image.BILINEAR)
+def _load_mask(image_path: Path, image_height: int, image_width: int, device: str) -> torch.Tensor:
+    image = Image.open(image_path).convert("L").resize((image_width, image_height), Image.BILINEAR)
     mask = torch.from_numpy(np.array(image)).float() / 255.0
     return mask.to(device)
 
 
 def load_multiview_supervision(
     views_json_path: str,
-    image_size: int,
+    image_height: int,
+    image_width: int,
     device: str,
 ) -> tuple[torch.Tensor, FoVPerspectiveCameras]:
     views_path = Path(views_json_path)
@@ -45,7 +46,14 @@ def load_multiview_supervision(
         if not image_path.exists():
             raise FileNotFoundError(f"Image not found: {image_path}")
 
-        masks.append(_load_mask(image_path, image_size=image_size, device=device))
+        masks.append(
+            _load_mask(
+                image_path,
+                image_height=image_height,
+                image_width=image_width,
+                device=device,
+            )
+        )
         rotations.append(torch.tensor(r, dtype=torch.float32, device=device))
         translations.append(torch.tensor(t, dtype=torch.float32, device=device))
 

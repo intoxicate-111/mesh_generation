@@ -1,4 +1,5 @@
 import math
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -16,9 +17,11 @@ from pytorch3d.structures import Meshes
 class PyTorch3DSilhouetteRenderer(nn.Module):
     def __init__(
         self,
-        image_size: int = 128,
+        image_size: Tuple[int, int] = (1080, 1920),
         sigma: float = 1e-4,
         faces_per_pixel: int = 50,
+        bin_size: int = 0,
+        max_faces_per_bin: int = 200000,
         device: str = "cpu",
     ) -> None:
         super().__init__()
@@ -30,6 +33,8 @@ class PyTorch3DSilhouetteRenderer(nn.Module):
             image_size=image_size,
             blur_radius=blur_radius,
             faces_per_pixel=faces_per_pixel,
+            bin_size=bin_size,
+            max_faces_per_bin=max_faces_per_bin,
         )
 
         self.renderer = MeshRenderer(

@@ -57,7 +57,8 @@ def main() -> None:
     parser.add_argument("--num_points", type=int, default=64)
     parser.add_argument("--cell_size", type=float, default=0.35)
     parser.add_argument("--alpha", type=float, default=1.5)
-    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--image_height", type=int, default=1080)
+    parser.add_argument("--image_width", type=int, default=1920)
     parser.add_argument("--lr", type=float, default=1e-2)
     args = parser.parse_args()
 
@@ -73,14 +74,18 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     params = PointCloudParams(num_points=num_points, device=device)
-    renderer = PyTorch3DSilhouetteRenderer(image_size=args.image_size, device=device).to(device)
+    renderer = PyTorch3DSilhouetteRenderer(
+        image_size=(args.image_height, args.image_width),
+        device=device,
+    ).to(device)
     _, faces = build_fixed_topology_mesh(num_verts=num_points, device=device)
 
     optimizer = torch.optim.Adam(params.parameters(), lr=args.lr)
 
     gt_mask, cameras = load_multiview_supervision(
         views_json_path=args.views_json,
-        image_size=args.image_size,
+        image_height=args.image_height,
+        image_width=args.image_width,
         device=device,
     )
     torch.save(
@@ -88,6 +93,8 @@ def main() -> None:
             "faces": faces.cpu(),
             "gt_mask": gt_mask.cpu(),
             "view_count": gt_mask.shape[0],
+            "image_height": args.image_height,
+            "image_width": args.image_width,
             "views_json": str(Path(args.views_json).resolve()),
         },
         output_dir / "target.pt",

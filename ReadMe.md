@@ -81,10 +81,18 @@ Run training:
 python main.py --views_json ./data/views.json
 ```
 
+Default training/input resolution is 1920x1080.
+
 Generate training views from an OBJ/STL mesh:
 
 ```bash
-python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 24
+python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 24 --image_width 1920 --image_height 1080
+```
+
+If you see PyTorch3D rasterization bin overflow warnings, force naive rasterization:
+
+```bash
+python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 24 --bin_size 0
 ```
 
 STL example:
@@ -136,7 +144,8 @@ Additional CLI options:
 
 - `--steps` (default: 400)
 - `--num_points` (default: 64)
-- `--image_size` (default: 128)
+- `--image_height` (default: 1080)
+- `--image_width` (default: 1920)
 - `--lr` (default: 1e-2)
 
 ## 📌 Modules

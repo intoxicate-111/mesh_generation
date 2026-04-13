@@ -50,12 +50,15 @@ def main() -> None:
     parser.add_argument("--mesh_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="./data")
     parser.add_argument("--num_views", type=int, default=24)
-    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--image_height", type=int, default=1080)
+    parser.add_argument("--image_width", type=int, default=1920)
     parser.add_argument("--dist", type=float, default=2.7)
     parser.add_argument("--elev", type=float, default=10.0)
     parser.add_argument("--fov", type=float, default=60.0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--disable_normalize", action="store_true")
+    parser.add_argument("--bin_size", type=int, default=0)
+    parser.add_argument("--max_faces_per_bin", type=int, default=200000)
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -73,9 +76,11 @@ def main() -> None:
 
     blend_params = BlendParams(sigma=1e-4, gamma=1e-4)
     raster_settings = RasterizationSettings(
-        image_size=args.image_size,
+        image_size=(args.image_height, args.image_width),
         blur_radius=0.0,
         faces_per_pixel=1,
+        bin_size=args.bin_size,
+        max_faces_per_bin=args.max_faces_per_bin,
     )
     renderer = MeshRenderer(
         rasterizer=MeshRasterizer(raster_settings=raster_settings),
