@@ -63,7 +63,8 @@ class PyTorch3DSilhouetteRenderer(nn.Module):
         alpha_outputs = []
         for start in range(0, view_count, max_views_per_batch):
             end = min(start + max_views_per_batch, view_count)
-            cameras_batch = cameras[start:end]
+            index_list = list(range(start, end))
+            cameras_batch = cameras[index_list]
             batch_size = end - start
             verts_batch = [verts for _ in range(batch_size)]
             faces_batch = [faces for _ in range(batch_size)]
