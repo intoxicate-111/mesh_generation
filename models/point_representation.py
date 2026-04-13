@@ -15,3 +15,17 @@ class PointCloudParams(nn.Module):
 
     def covariance(self) -> torch.Tensor:
         return build_covariance(self.quat, self.log_scale)
+
+    @property
+    def num_points(self) -> int:
+        return int(self.points.shape[0])
+
+    def reset_parameters(
+        self,
+        points: torch.Tensor,
+        quat: torch.Tensor,
+        log_scale: torch.Tensor,
+    ) -> None:
+        self.points = nn.Parameter(points)
+        self.quat = nn.Parameter(quat)
+        self.log_scale = nn.Parameter(log_scale)
