@@ -93,6 +93,9 @@ STL example:
 python render_obj_views.py --mesh_path ./assets/mesh.stl --output_dir ./data --num_views 24
 ```
 
+By default, mesh is normalized (centered and scaled to unit bounding sphere) before rendering.
+Use `--disable_normalize` to keep original mesh scale/position.
+
 `views.json` format (N views with camera poses):
 
 ```json

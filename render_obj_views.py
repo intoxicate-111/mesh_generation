@@ -32,6 +32,19 @@ def load_mesh(mesh_path: Path, device: torch.device) -> Meshes:
     raise ValueError(f"Unsupported mesh format: {mesh_path.suffix}. Use .obj or .stl")
 
 
+def normalize_mesh(mesh: Meshes) -> Meshes:
+    verts = mesh.verts_packed()
+    v_min = verts.min(dim=0).values
+    v_max = verts.max(dim=0).values
+    center = (v_min + v_max) * 0.5
+
+    centered = verts - center
+    scale = centered.norm(dim=1).max().clamp_min(1e-6)
+
+    norm_verts = [(v - center) / scale for v in mesh.verts_list()]
+    return Meshes(verts=norm_verts, faces=mesh.faces_list())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render multi-view silhouettes from an OBJ/STL mesh")
     parser.add_argument("--mesh_path", type=str, required=True)
@@ -42,6 +55,7 @@ def main() -> None:
     parser.add_argument("--elev", type=float, default=10.0)
     parser.add_argument("--fov", type=float, default=60.0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--disable_normalize", action="store_true")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -54,6 +68,8 @@ def main() -> None:
     images_dir.mkdir(parents=True, exist_ok=True)
 
     mesh = load_mesh(mesh_path, device=device)
+    if not args.disable_normalize:
+        mesh = normalize_mesh(mesh)
 
     blend_params = BlendParams(sigma=1e-4, gamma=1e-4)
     raster_settings = RasterizationSettings(
@@ -101,6 +117,7 @@ def main() -> None:
 
     print(f"saved: {views_path}")
     print(f"saved images: {images_dir}")
+    print(f"normalize mesh: {not args.disable_normalize}")
 
 
 if __name__ == "__main__":
