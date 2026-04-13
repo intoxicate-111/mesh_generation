@@ -86,19 +86,23 @@ Default training/input resolution is 1920x1080.
 Generate training views from an OBJ/STL mesh:
 
 ```bash
-python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 24 --image_width 1920 --image_height 1080
+python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 8 --image_width 1920 --image_height 1080
 ```
+
+View sampling is cube-like for any `--num_views` (Rubik-style coverage):
+camera directions are sampled from the six cube faces and projected to a sphere,
+so views always include vertical variation (not horizontal-only).
 
 If you see PyTorch3D rasterization bin overflow warnings, force naive rasterization:
 
 ```bash
-python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 24 --bin_size 0
+python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 8 --bin_size 0
 ```
 
 STL example:
 
 ```bash
-python render_obj_views.py --mesh_path ./assets/mesh.stl --output_dir ./data --num_views 24
+python render_obj_views.py --mesh_path ./assets/mesh.stl --output_dir ./data --num_views 8
 ```
 
 By default, mesh is normalized (centered and scaled to unit bounding sphere) before rendering.

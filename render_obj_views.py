@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -47,11 +48,56 @@ def normalize_mesh(mesh: Meshes) -> Meshes:
     return Meshes(verts=norm_verts, faces=mesh.faces_list())
 
 
+def _direction_to_elev_azim(direction: torch.Tensor) -> tuple[float, float]:
+    unit = direction / direction.norm().clamp_min(1e-8)
+    x, y, z = float(unit[0].item()), float(unit[1].item()), float(unit[2].item())
+    elev = math.degrees(math.asin(max(-1.0, min(1.0, y))))
+    azim = math.degrees(math.atan2(x, z))
+    return elev, azim
+
+
+def build_cube_like_angles(num_views: int) -> list[tuple[float, float]]:
+    if num_views < 1:
+        raise ValueError("num_views must be >= 1")
+
+    side = 1
+    while 6 * side * side < num_views:
+        side += 1
+
+    coords = torch.linspace(-1.0 + 1.0 / side, 1.0 - 1.0 / side, steps=side)
+    face_dirs: list[list[torch.Tensor]] = [[] for _ in range(6)]
+
+    for u in coords:
+        for v in coords:
+            face_dirs[0].append(torch.tensor([1.0, u.item(), v.item()]))
+            face_dirs[1].append(torch.tensor([-1.0, u.item(), v.item()]))
+            face_dirs[2].append(torch.tensor([u.item(), 1.0, v.item()]))
+            face_dirs[3].append(torch.tensor([u.item(), -1.0, v.item()]))
+            face_dirs[4].append(torch.tensor([u.item(), v.item(), 1.0]))
+            face_dirs[5].append(torch.tensor([u.item(), v.item(), -1.0]))
+
+    samples: list[torch.Tensor] = []
+    idx = 0
+    while len(samples) < num_views:
+        progress = False
+        for f in range(6):
+            if idx < len(face_dirs[f]):
+                samples.append(face_dirs[f][idx])
+                progress = True
+                if len(samples) == num_views:
+                    break
+        if not progress:
+            break
+        idx += 1
+
+    return [_direction_to_elev_azim(d) for d in samples]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render multi-view silhouettes from an OBJ/STL mesh")
     parser.add_argument("--mesh_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="./data")
-    parser.add_argument("--num_views", type=int, default=24)
+    parser.add_argument("--num_views", type=int, default=8)
     parser.add_argument("--image_height", type=int, default=1080)
     parser.add_argument("--image_width", type=int, default=1920)
     parser.add_argument("--dist", type=float, default=2.7)
@@ -98,11 +144,12 @@ def main() -> None:
     )
     lights = PointLights(device=device, location=[[2.0, 2.0, -2.0]])
 
-    azims = torch.linspace(0.0, 360.0, steps=args.num_views + 1)[:-1]
+    angle_pairs = build_cube_like_angles(args.num_views)
+
     views = []
 
-    for idx, azim in enumerate(azims.tolist()):
-        r, t = look_at_view_transform(dist=args.dist, elev=args.elev, azim=azim, device=device)
+    for idx, (elev, azim) in enumerate(angle_pairs):
+        r, t = look_at_view_transform(dist=args.dist, elev=elev, azim=azim, device=device)
         cameras = FoVPerspectiveCameras(R=r, T=t, fov=args.fov, device=device)
 
         rgb = rgb_renderer(meshes_world=mesh, cameras=cameras, lights=lights)[0, ..., :3].clamp(0.0, 1.0)
@@ -123,6 +170,8 @@ def main() -> None:
                 "rgb_image": f"images_rgb/{image_name}",
                 "R": r[0].detach().cpu().tolist(),
                 "T": t[0].detach().cpu().tolist(),
+                "elev": float(elev),
+                "azim": float(azim),
             }
         )
 
