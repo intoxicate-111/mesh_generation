@@ -1,0 +1,1 @@
+from .renderer import PyTorch3DSilhouetteRenderer
