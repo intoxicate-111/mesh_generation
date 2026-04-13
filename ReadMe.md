@@ -73,6 +73,7 @@ Requirements:
 - Python ≥ 3.9
 - PyTorch ≥ 2.x
 - CUDA (recommended)
+- trimesh (for STL support)
 
 Run training:
 
@@ -80,10 +81,16 @@ Run training:
 python main.py --views_json ./data/views.json
 ```
 
-Generate training views from an OBJ mesh:
+Generate training views from an OBJ/STL mesh:
 
 ```bash
-python render_obj_views.py --obj_path ./assets/mesh.obj --output_dir ./data --num_views 24
+python render_obj_views.py --mesh_path ./assets/mesh.obj --output_dir ./data --num_views 24
+```
+
+STL example:
+
+```bash
+python render_obj_views.py --mesh_path ./assets/mesh.stl --output_dir ./data --num_views 24
 ```
 
 `views.json` format (N views with camera poses):

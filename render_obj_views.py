@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 from PIL import Image
+import trimesh
 from pytorch3d.io import load_objs_as_meshes
 from pytorch3d.renderer import (
     BlendParams,
@@ -14,11 +15,26 @@ from pytorch3d.renderer import (
     SoftSilhouetteShader,
     look_at_view_transform,
 )
+from pytorch3d.structures import Meshes
+
+
+def load_mesh(mesh_path: Path, device: torch.device) -> Meshes:
+    suffix = mesh_path.suffix.lower()
+    if suffix == ".obj":
+        return load_objs_as_meshes([str(mesh_path)], device=device)
+    if suffix == ".stl":
+        tm = trimesh.load(str(mesh_path), force="mesh")
+        if tm.faces is None or len(tm.faces) == 0:
+            raise ValueError(f"No valid faces in STL: {mesh_path}")
+        verts = torch.tensor(tm.vertices, dtype=torch.float32, device=device)
+        faces = torch.tensor(tm.faces, dtype=torch.int64, device=device)
+        return Meshes(verts=[verts], faces=[faces])
+    raise ValueError(f"Unsupported mesh format: {mesh_path.suffix}. Use .obj or .stl")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Render multi-view silhouettes from an OBJ mesh")
-    parser.add_argument("--obj_path", type=str, required=True)
+    parser = argparse.ArgumentParser(description="Render multi-view silhouettes from an OBJ/STL mesh")
+    parser.add_argument("--mesh_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="./data")
     parser.add_argument("--num_views", type=int, default=24)
     parser.add_argument("--image_size", type=int, default=128)
@@ -29,15 +45,15 @@ def main() -> None:
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    obj_path = Path(args.obj_path).resolve()
-    if not obj_path.exists():
-        raise FileNotFoundError(f"OBJ not found: {obj_path}")
+    mesh_path = Path(args.mesh_path).resolve()
+    if not mesh_path.exists():
+        raise FileNotFoundError(f"Mesh not found: {mesh_path}")
 
     output_dir = Path(args.output_dir).resolve()
     images_dir = output_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    mesh = load_objs_as_meshes([str(obj_path)], device=device)
+    mesh = load_mesh(mesh_path, device=device)
 
     blend_params = BlendParams(sigma=1e-4, gamma=1e-4)
     raster_settings = RasterizationSettings(
