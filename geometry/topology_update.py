@@ -1,7 +1,9 @@
-from itertools import combinations
-from typing import List, Sequence, Tuple
+from collections import defaultdict
+from typing import Dict, List, Sequence, Tuple
 
 import torch
+
+from geometry.mesh_builder import triangle_scores_from_edge_matrix
 
 
 def build_sparse_edge_matrix(
@@ -54,34 +56,42 @@ def _triangle_area(verts: torch.Tensor, tri: Sequence[int]) -> float:
     return 0.5 * torch.cross(verts[j] - verts[i], verts[k] - verts[i], dim=0).norm().item()
 
 
-def propose_faces_from_edges(
-    edge_mat: torch.Tensor,
-    max_faces_per_anchor: int,
+def propose_faces_from_triangle_scores(
+    tri_scores: torch.Tensor,
+    score_threshold: float,
+    max_faces: int,
 ) -> List[Tuple[int, int, int]]:
-    n = edge_mat.shape[0]
-    faces: List[Tuple[int, int, int]] = []
+    n = tri_scores.shape[0]
+    candidates: List[Tuple[float, Tuple[int, int, int]]] = []
 
     for i in range(n):
-        neigh = torch.nonzero(edge_mat[i] > 0, as_tuple=False).flatten().tolist()
-        if len(neigh) < 2:
-            continue
+        for j in range(i + 1, n):
+            for k in range(j + 1, n):
+                score = float(tri_scores[i, j, k].item())
+                if score >= score_threshold:
+                    candidates.append((score, (i, j, k)))
 
-        local_candidates: List[Tuple[float, Tuple[int, int, int]]] = []
-        for j, k in combinations(neigh, 2):
-            if edge_mat[j, k] <= 0:
-                continue
-            score = float(edge_mat[i, j].item() * edge_mat[j, k].item() * edge_mat[k, i].item())
-            tri = tuple(sorted((i, j, k)))
-            local_candidates.append((score, tri))
+    if not candidates:
+        return []
 
-        if not local_candidates:
-            continue
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    return [tri for _, tri in candidates[:max_faces]]
 
-        local_candidates.sort(key=lambda t: t[0], reverse=True)
-        for _, tri in local_candidates[:max_faces_per_anchor]:
-            faces.append(tri)
 
-    return faces
+def _face_normal(verts: torch.Tensor, tri: Sequence[int]) -> torch.Tensor:
+    i, j, k = tri
+    n = torch.cross(verts[j] - verts[i], verts[k] - verts[i], dim=0)
+    return n / n.norm().clamp_min(1e-8)
+
+
+def _orient_face_outward(verts: torch.Tensor, tri: Tuple[int, int, int]) -> Tuple[int, int, int]:
+    center = verts.mean(dim=0)
+    i, j, k = tri
+    normal = _face_normal(verts, tri)
+    face_center = (verts[i] + verts[j] + verts[k]) / 3.0
+    if torch.dot(normal, face_center - center) < 0:
+        return (i, k, j)
+    return tri
 
 
 def filter_valid_faces(
@@ -90,9 +100,11 @@ def filter_valid_faces(
     edge_mat: torch.Tensor,
     min_area: float,
     max_aspect_ratio: float,
+    min_normal_dot: float,
 ) -> torch.Tensor:
     unique = set()
     valid: List[Tuple[int, int, int]] = []
+    edge_normals: Dict[Tuple[int, int], List[torch.Tensor]] = defaultdict(list)
 
     for tri in faces:
         tri_sorted = tuple(sorted(tri))
@@ -113,8 +125,26 @@ def filter_valid_faces(
         if aspect > max_aspect_ratio:
             continue
 
+        oriented = _orient_face_outward(verts, tri_sorted)
+        normal = _face_normal(verts, oriented)
+        reject = False
+        for a, b in ((oriented[0], oriented[1]), (oriented[1], oriented[2]), (oriented[2], oriented[0])):
+            e = (min(a, b), max(a, b))
+            if e in edge_normals and edge_normals[e]:
+                ref_n = torch.stack(edge_normals[e], dim=0).mean(dim=0)
+                ref_n = ref_n / ref_n.norm().clamp_min(1e-8)
+                if torch.dot(normal, ref_n) < min_normal_dot:
+                    reject = True
+                    break
+
+        if reject:
+            continue
+
         unique.add(tri_sorted)
-        valid.append(tri_sorted)
+        valid.append(oriented)
+        for a, b in ((oriented[0], oriented[1]), (oriented[1], oriented[2]), (oriented[2], oriented[0])):
+            e = (min(a, b), max(a, b))
+            edge_normals[e].append(normal)
 
     if not valid:
         return torch.empty((0, 3), dtype=torch.long, device=verts.device)
@@ -124,15 +154,23 @@ def filter_valid_faces(
 def build_faces_from_edge_graph(
     verts: torch.Tensor,
     edge_mat: torch.Tensor,
-    max_faces_per_anchor: int = 6,
+    triangle_score_threshold: float = 1e-4,
+    max_faces: int = 1024,
     min_area: float = 1e-6,
     max_aspect_ratio: float = 15.0,
+    min_normal_dot: float = -0.2,
 ) -> torch.Tensor:
-    raw_faces = propose_faces_from_edges(edge_mat=edge_mat, max_faces_per_anchor=max_faces_per_anchor)
+    tri_scores = triangle_scores_from_edge_matrix(edge_mat)
+    raw_faces = propose_faces_from_triangle_scores(
+        tri_scores=tri_scores,
+        score_threshold=triangle_score_threshold,
+        max_faces=max_faces,
+    )
     return filter_valid_faces(
         verts=verts,
         faces=raw_faces,
         edge_mat=edge_mat,
         min_area=min_area,
         max_aspect_ratio=max_aspect_ratio,
+        min_normal_dot=min_normal_dot,
     )

@@ -1,10 +1,12 @@
 import argparse
+import json
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 
 from data.multiview_dataset import load_multiview_supervision
+from evaluation.mesh_metrics import compute_mesh_quality_metrics
 from geometry.dynamic_points import adaptive_point_update
 from geometry.edge_weights import compute_edge_weights
 from geometry.mesh_builder import build_fixed_topology_mesh
@@ -58,6 +60,78 @@ def _normalize_positive(values: torch.Tensor) -> torch.Tensor:
     return values / values.mean().clamp_min(1e-6)
 
 
+def _face_normals(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    if faces.numel() == 0:
+        return torch.empty((0, 3), device=verts.device, dtype=verts.dtype)
+    v0 = verts[faces[:, 0]]
+    v1 = verts[faces[:, 1]]
+    v2 = verts[faces[:, 2]]
+    n = torch.cross(v1 - v0, v2 - v0, dim=1)
+    return n / n.norm(dim=1, keepdim=True).clamp_min(1e-8)
+
+
+def _face_adjacency_pairs(faces: torch.Tensor) -> list[tuple[int, int]]:
+    if faces.numel() == 0:
+        return []
+    edge_to_faces = {}
+    for idx, tri in enumerate(faces.tolist()):
+        i, j, k = tri
+        for a, b in ((i, j), (j, k), (k, i)):
+            e = (min(a, b), max(a, b))
+            edge_to_faces.setdefault(e, []).append(idx)
+
+    pairs = []
+    for ids in edge_to_faces.values():
+        if len(ids) >= 2:
+            for a in range(len(ids)):
+                for b in range(a + 1, len(ids)):
+                    pairs.append((ids[a], ids[b]))
+    return pairs
+
+
+def normal_consistency_loss(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    normals = _face_normals(verts, faces)
+    if normals.numel() == 0:
+        return torch.tensor(0.0, device=verts.device)
+    pairs = _face_adjacency_pairs(faces)
+    if not pairs:
+        return torch.tensor(0.0, device=verts.device)
+
+    dots = [torch.dot(normals[i], normals[j]) for i, j in pairs]
+    dots_t = torch.stack(dots)
+    return (1.0 - dots_t).mean()
+
+
+def flip_penalty_loss(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    normals = _face_normals(verts, faces)
+    if normals.numel() == 0:
+        return torch.tensor(0.0, device=verts.device)
+    pairs = _face_adjacency_pairs(faces)
+    if not pairs:
+        return torch.tensor(0.0, device=verts.device)
+
+    dots = torch.stack([torch.dot(normals[i], normals[j]) for i, j in pairs])
+    return F.relu(-dots).mean()
+
+
+def face_quality_loss(verts: torch.Tensor, faces: torch.Tensor, target_aspect_ratio: float = 2.5) -> torch.Tensor:
+    if faces.numel() == 0:
+        return torch.tensor(0.0, device=verts.device)
+    a = (verts[faces[:, 0]] - verts[faces[:, 1]]).norm(dim=1)
+    b = (verts[faces[:, 1]] - verts[faces[:, 2]]).norm(dim=1)
+    c = (verts[faces[:, 2]] - verts[faces[:, 0]]).norm(dim=1)
+    lengths = torch.stack([a, b, c], dim=1)
+    aspect = lengths.max(dim=1).values / lengths.min(dim=1).values.clamp_min(1e-8)
+    return F.relu(aspect - target_aspect_ratio).mean()
+
+
+def degree_sparsity_loss(edge_mat: torch.Tensor, target_degree: float = 6.0) -> torch.Tensor:
+    if edge_mat.numel() == 0:
+        return torch.tensor(0.0, device=edge_mat.device)
+    degree = (edge_mat > 0).sum(dim=1).float()
+    return F.relu(degree - target_degree).mean()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train mesh with multi-view supervision")
     parser.add_argument("--views_json", type=str, required=True, help="Path to views.json")
@@ -86,7 +160,15 @@ def main() -> None:
     parser.add_argument("--prune_min_degree", type=int, default=1)
     parser.add_argument("--edge_min_weight", type=float, default=0.15)
     parser.add_argument("--edge_topk", type=int, default=8)
-    parser.add_argument("--max_faces_per_anchor", type=int, default=6)
+    parser.add_argument("--topology_rebuild_interval", type=int, default=5)
+    parser.add_argument("--triangle_score_threshold", type=float, default=1e-4)
+    parser.add_argument("--max_dynamic_faces", type=int, default=1024)
+    parser.add_argument("--normal_filter_dot", type=float, default=-0.2)
+    parser.add_argument("--normal_loss_weight", type=float, default=0.02)
+    parser.add_argument("--face_quality_weight", type=float, default=0.02)
+    parser.add_argument("--flip_penalty_weight", type=float, default=0.02)
+    parser.add_argument("--degree_loss_weight", type=float, default=0.01)
+    parser.add_argument("--target_points_path", type=str, default="", help="Optional .pt file with [M,3] target points")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -130,6 +212,7 @@ def main() -> None:
     )
 
     history = []
+    topology_dirty = True
 
     for step in range(steps):
         optimizer.zero_grad()
@@ -154,15 +237,24 @@ def main() -> None:
         ).to(device)
 
         pred_verts = torch.tanh(points)
-        dynamic_faces = build_faces_from_edge_graph(
-            verts=pred_verts,
-            edge_mat=edge_mat,
-            max_faces_per_anchor=args.max_faces_per_anchor,
+        should_rebuild_topology = (
+            topology_dirty
+            or step == 0
+            or (args.topology_rebuild_interval > 0 and step % args.topology_rebuild_interval == 0)
         )
-        if dynamic_faces.numel() > 0:
-            faces = dynamic_faces
-        else:
-            _, faces = build_fixed_topology_mesh(num_verts=points.shape[0], device=device)
+        if should_rebuild_topology:
+            dynamic_faces = build_faces_from_edge_graph(
+                verts=pred_verts,
+                edge_mat=edge_mat,
+                triangle_score_threshold=args.triangle_score_threshold,
+                max_faces=args.max_dynamic_faces,
+                min_normal_dot=args.normal_filter_dot,
+            )
+            if dynamic_faces.numel() > 0:
+                faces = dynamic_faces
+            else:
+                _, faces = build_fixed_topology_mesh(num_verts=points.shape[0], device=device)
+            topology_dirty = False
 
         if edge_mat.numel() > 0 and torch.any(edge_mat > 0):
             edge_reg = edge_mat[edge_mat > 0].mean()
@@ -180,11 +272,19 @@ def main() -> None:
         boundary_loss = boundary_aware_silhouette_loss(pred_mask, gt_mask)
         smooth_loss = laplacian_like_loss(points, neighbors)
         e_len_loss = edge_length_loss(pred_verts, neighbors)
+        n_cons_loss = normal_consistency_loss(pred_verts, faces)
+        f_quality_loss = face_quality_loss(pred_verts, faces)
+        f_flip_loss = flip_penalty_loss(pred_verts, faces)
+        deg_loss = degree_sparsity_loss(edge_mat)
         loss = (
             render_loss
             + args.boundary_loss_weight * boundary_loss
             + 0.05 * smooth_loss
             + 0.02 * e_len_loss
+            + args.normal_loss_weight * n_cons_loss
+            + args.face_quality_weight * f_quality_loss
+            + args.flip_penalty_weight * f_flip_loss
+            + args.degree_loss_weight * deg_loss
             - 0.01 * edge_reg
         )
 
@@ -244,6 +344,7 @@ def main() -> None:
                 if added_this_step > 0 or pruned_this_step > 0 or split_this_step > 0 or merged_this_step > 0:
                     params.reset_parameters(update.points, update.quat, update.log_scale)
                     optimizer = rebuild_adam_optimizer(optimizer, params.parameters(), lr_override=args.lr)
+                    topology_dirty = True
 
         history.append(
             {
@@ -253,6 +354,10 @@ def main() -> None:
                 "boundary": float(boundary_loss.item()),
                 "smooth": float(smooth_loss.item()),
                 "edge_len": float(e_len_loss.item()),
+                "normal": float(n_cons_loss.item()),
+                "face_quality": float(f_quality_loss.item()),
+                "flip": float(f_flip_loss.item()),
+                "degree": float(deg_loss.item()),
                 "edge_reg": float(edge_reg.item()),
                 "points": int(params.num_points),
                 "faces": int(faces.shape[0]),
@@ -268,6 +373,7 @@ def main() -> None:
                 f"step={step:03d} total={loss.item():.6f} "
                 f"render={render_loss.item():.6f} boundary={boundary_loss.item():.6f} "
                 f"smooth={smooth_loss.item():.6f} edge_len={e_len_loss.item():.6f} "
+                f"normal={n_cons_loss.item():.6f} flip={f_flip_loss.item():.6f} "
                 f"points={params.num_points} faces={faces.shape[0]} "
                 f"+{added_this_step}/-{pruned_this_step} split={split_this_step} merge={merged_this_step}"
             )
@@ -288,7 +394,9 @@ def main() -> None:
         final_faces = build_faces_from_edge_graph(
             verts=final_verts,
             edge_mat=final_edge_mat,
-            max_faces_per_anchor=args.max_faces_per_anchor,
+            triangle_score_threshold=args.triangle_score_threshold,
+            max_faces=args.max_dynamic_faces,
+            min_normal_dot=args.normal_filter_dot,
         )
         if final_faces.numel() == 0:
             _, final_faces = build_fixed_topology_mesh(num_verts=params.num_points, device=device)
@@ -318,19 +426,41 @@ def main() -> None:
 
     loss_csv = output_dir / "loss_history.csv"
     with loss_csv.open("w", encoding="utf-8") as f:
-        f.write("step,total,render,boundary,smooth,edge_len,edge_reg,points,faces,added,pruned,split,merged\n")
+        f.write(
+            "step,total,render,boundary,smooth,edge_len,normal,face_quality,flip,degree,"
+            "edge_reg,points,faces,added,pruned,split,merged\n"
+        )
         for row in history:
             f.write(
                 f"{row['step']},{row['total']:.8f},{row['render']:.8f},"
                 f"{row['boundary']:.8f},{row['smooth']:.8f},{row['edge_len']:.8f},"
+                f"{row['normal']:.8f},{row['face_quality']:.8f},{row['flip']:.8f},{row['degree']:.8f},"
                 f"{row['edge_reg']:.8f},{row['points']},{row['faces']},"
                 f"{row['added']},{row['pruned']},{row['split']},{row['merged']}\n"
             )
+
+    target_points = None
+    if args.target_points_path:
+        loaded = torch.load(args.target_points_path, map_location=device)
+        if isinstance(loaded, dict) and "points" in loaded:
+            target_points = loaded["points"].to(device)
+        elif torch.is_tensor(loaded):
+            target_points = loaded.to(device)
+    metrics = compute_mesh_quality_metrics(
+        verts=final_verts,
+        faces=final_faces,
+        edge_mat=final_edge_mat,
+        target_points=target_points,
+    )
+    metrics_path = output_dir / "metrics_final.json"
+    with metrics_path.open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
 
     print(f"saved: {output_dir / 'checkpoint_final.pt'}")
     print(f"saved: {output_dir / 'masks_final.pt'}")
     print(f"saved: {mesh_obj_path}")
     print(f"saved: {loss_csv}")
+    print(f"saved: {metrics_path}")
     print(f"views used: {gt_mask.shape[0]}")
 
 
