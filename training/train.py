@@ -60,6 +60,8 @@ def main() -> None:
     parser.add_argument("--image_height", type=int, default=1080)
     parser.add_argument("--image_width", type=int, default=1920)
     parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--faces_per_pixel", type=int, default=8)
+    parser.add_argument("--max_views_per_batch", type=int, default=4)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -76,6 +78,7 @@ def main() -> None:
     params = PointCloudParams(num_points=num_points, device=device)
     renderer = PyTorch3DSilhouetteRenderer(
         image_size=(args.image_height, args.image_width),
+        faces_per_pixel=args.faces_per_pixel,
         device=device,
     ).to(device)
     _, faces = build_fixed_topology_mesh(num_verts=num_points, device=device)
@@ -118,7 +121,12 @@ def main() -> None:
             edge_reg = torch.tensor(0.0, device=device)
 
         pred_verts = torch.tanh(points)
-        pred_mask = renderer(pred_verts, faces, cameras)
+        pred_mask = renderer(
+            pred_verts,
+            faces,
+            cameras,
+            max_views_per_batch=args.max_views_per_batch,
+        )
 
         render_loss = F.mse_loss(pred_mask, gt_mask)
         smooth_loss = laplacian_like_loss(points, neighbors)
@@ -148,7 +156,12 @@ def main() -> None:
 
     with torch.no_grad():
         final_verts = torch.tanh(params.points)
-        final_mask = renderer(final_verts, faces, cameras)
+        final_mask = renderer(
+            final_verts,
+            faces,
+            cameras,
+            max_views_per_batch=args.max_views_per_batch,
+        )
 
     torch.save(
         {

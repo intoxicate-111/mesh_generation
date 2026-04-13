@@ -19,7 +19,7 @@ class PyTorch3DSilhouetteRenderer(nn.Module):
         self,
         image_size: Tuple[int, int] = (1080, 1920),
         sigma: float = 1e-4,
-        faces_per_pixel: int = 50,
+        faces_per_pixel: int = 8,
         bin_size: int = 0,
         max_faces_per_bin: int = 200000,
         device: str = "cpu",
@@ -48,6 +48,7 @@ class PyTorch3DSilhouetteRenderer(nn.Module):
         verts: torch.Tensor,
         faces: torch.Tensor,
         cameras: FoVPerspectiveCameras,
+        max_views_per_batch: int = 4,
     ) -> torch.Tensor:
         if verts.ndim != 2 or verts.size(-1) != 3:
             raise ValueError("verts must have shape [V, 3]")
@@ -55,10 +56,19 @@ class PyTorch3DSilhouetteRenderer(nn.Module):
             raise ValueError("faces must have shape [F, 3]")
         if len(cameras) < 1:
             raise ValueError("cameras must contain at least one view")
+        if max_views_per_batch < 1:
+            raise ValueError("max_views_per_batch must be >= 1")
 
         view_count = len(cameras)
-        verts_batch = [verts for _ in range(view_count)]
-        faces_batch = [faces for _ in range(view_count)]
-        meshes = Meshes(verts=verts_batch, faces=faces_batch)
-        rendered = self.renderer(meshes_world=meshes, cameras=cameras)
-        return rendered[..., 3]
+        alpha_outputs = []
+        for start in range(0, view_count, max_views_per_batch):
+            end = min(start + max_views_per_batch, view_count)
+            cameras_batch = cameras[start:end]
+            batch_size = end - start
+            verts_batch = [verts for _ in range(batch_size)]
+            faces_batch = [faces for _ in range(batch_size)]
+            meshes = Meshes(verts=verts_batch, faces=faces_batch)
+            rendered = self.renderer(meshes_world=meshes, cameras=cameras_batch)
+            alpha_outputs.append(rendered[..., 3])
+
+        return torch.cat(alpha_outputs, dim=0)

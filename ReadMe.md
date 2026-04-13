@@ -81,6 +81,12 @@ Run training:
 python main.py --views_json ./data/views.json
 ```
 
+OOM-safe example (recommended on 16GB GPU):
+
+```bash
+python main.py --views_json ./data/views.json --image_width 512 --image_height 512 --faces_per_pixel 4 --max_views_per_batch 2
+```
+
 Default training/input resolution is 1920x1080.
 
 Generate training views from an OBJ/STL mesh:
@@ -152,6 +158,8 @@ Additional CLI options:
 - `--num_points` (default: 64)
 - `--image_height` (default: 1080)
 - `--image_width` (default: 1920)
+- `--faces_per_pixel` (default: 8)
+- `--max_views_per_batch` (default: 4)
 - `--lr` (default: 1e-2)
 
 ## 📌 Modules
