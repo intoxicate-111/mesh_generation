@@ -1,7 +1,10 @@
-import torch
-import torch.nn.functional as F
+import argparse
 from pathlib import Path
 
+import torch
+import torch.nn.functional as F
+
+from data.multiview_dataset import load_multiview_supervision
 from geometry.edge_weights import compute_edge_weights
 from geometry.mesh_builder import build_fixed_topology_mesh
 from geometry.spatial_blocks import build_spatial_blocks, query_candidate_neighbors
@@ -35,32 +38,60 @@ def edge_length_loss(points: torch.Tensor, neighbors: list[list[int]]) -> torch.
     return ((edge_lengths - edge_lengths.mean()) ** 2).mean()
 
 
+def save_obj(path: Path, verts: torch.Tensor, faces: torch.Tensor) -> None:
+    verts_cpu = verts.detach().cpu()
+    faces_cpu = faces.detach().cpu()
+
+    with path.open("w", encoding="utf-8") as f:
+        for v in verts_cpu:
+            f.write(f"v {v[0].item():.6f} {v[1].item():.6f} {v[2].item():.6f}\n")
+        for tri in faces_cpu:
+            i, j, k = int(tri[0].item()) + 1, int(tri[1].item()) + 1, int(tri[2].item()) + 1
+            f.write(f"f {i} {j} {k}\n")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Train mesh with multi-view supervision")
+    parser.add_argument("--views_json", type=str, required=True, help="Path to views.json")
+    parser.add_argument("--steps", type=int, default=400)
+    parser.add_argument("--num_points", type=int, default=64)
+    parser.add_argument("--cell_size", type=float, default=0.35)
+    parser.add_argument("--alpha", type=float, default=1.5)
+    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--lr", type=float, default=1e-2)
+    args = parser.parse_args()
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(42)
 
-    num_points = 64
-    cell_size = 0.35
-    alpha = 1.5
-    steps = 101
+    num_points = args.num_points
+    cell_size = args.cell_size
+    alpha = args.alpha
+    steps = args.steps
 
     output_dir = Path(__file__).resolve().parents[1] / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     params = PointCloudParams(num_points=num_points, device=device)
-    renderer = PyTorch3DSilhouetteRenderer(image_size=128, device=device).to(device)
+    renderer = PyTorch3DSilhouetteRenderer(image_size=args.image_size, device=device).to(device)
     _, faces = build_fixed_topology_mesh(num_verts=num_points, device=device)
 
-    optimizer = torch.optim.Adam(params.parameters(), lr=1e-2)
+    optimizer = torch.optim.Adam(params.parameters(), lr=args.lr)
 
-    with torch.no_grad():
-        gt_points = torch.randn(num_points, 3, device=device) * 0.35
-        gt_points[:, 2] = gt_points[:, 2] * 0.2
-        gt_mask = renderer(gt_points, faces)
-        torch.save(
-            {"gt_points": gt_points.cpu(), "faces": faces.cpu(), "gt_mask": gt_mask.cpu()},
-            output_dir / "target.pt",
-        )
+    gt_mask, cameras = load_multiview_supervision(
+        views_json_path=args.views_json,
+        image_size=args.image_size,
+        device=device,
+    )
+    torch.save(
+        {
+            "faces": faces.cpu(),
+            "gt_mask": gt_mask.cpu(),
+            "view_count": gt_mask.shape[0],
+            "views_json": str(Path(args.views_json).resolve()),
+        },
+        output_dir / "target.pt",
+    )
 
     history = []
 
@@ -80,7 +111,7 @@ def main() -> None:
             edge_reg = torch.tensor(0.0, device=device)
 
         pred_verts = torch.tanh(points)
-        pred_mask = renderer(pred_verts, faces)
+        pred_mask = renderer(pred_verts, faces, cameras)
 
         render_loss = F.mse_loss(pred_mask, gt_mask)
         smooth_loss = laplacian_like_loss(points, neighbors)
@@ -110,7 +141,7 @@ def main() -> None:
 
     with torch.no_grad():
         final_verts = torch.tanh(params.points)
-        final_mask = renderer(final_verts, faces)
+        final_mask = renderer(final_verts, faces, cameras)
 
     torch.save(
         {
@@ -125,6 +156,8 @@ def main() -> None:
         {"pred_mask": final_mask.detach().cpu(), "gt_mask": gt_mask.detach().cpu()},
         output_dir / "masks_final.pt",
     )
+    mesh_obj_path = output_dir / "mesh_final.obj"
+    save_obj(mesh_obj_path, final_verts, faces)
 
     loss_csv = output_dir / "loss_history.csv"
     with loss_csv.open("w", encoding="utf-8") as f:
@@ -137,7 +170,9 @@ def main() -> None:
 
     print(f"saved: {output_dir / 'checkpoint_final.pt'}")
     print(f"saved: {output_dir / 'masks_final.pt'}")
+    print(f"saved: {mesh_obj_path}")
     print(f"saved: {loss_csv}")
+    print(f"views used: {gt_mask.shape[0]}")
 
 
 if __name__ == "__main__":

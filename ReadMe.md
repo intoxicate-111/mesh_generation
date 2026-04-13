@@ -78,15 +78,51 @@ Run training:
 
 ```bash
 cd project
-python -m training.train
+python -m training.train --views_json ./data/views.json
 ```
+
+`views.json` format (N views with camera poses):
+
+```json
+{
+	"data_root": "./data/images",
+	"fov": 60.0,
+	"views": [
+		{
+			"image": "view_000.png",
+			"R": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+			"T": [0.0, 0.0, 2.7]
+		},
+		{
+			"image": "view_001.png",
+			"R": [[0.9848, 0, 0.1736], [0, 1, 0], [-0.1736, 0, 0.9848]],
+			"T": [0.0, 0.0, 2.7]
+		}
+	]
+}
+```
+
+Notes:
+
+- `image` supports relative paths under `data_root`
+- `R` is a 3x3 world-to-view rotation matrix
+- `T` is a 3D translation vector
+- Image will be loaded as grayscale silhouette target
 
 Saved outputs (auto-generated):
 
 - `project/outputs/target.pt`
 - `project/outputs/checkpoint_final.pt`
 - `project/outputs/masks_final.pt`
+- `project/outputs/mesh_final.obj`
 - `project/outputs/loss_history.csv`
+
+Additional CLI options:
+
+- `--steps` (default: 400)
+- `--num_points` (default: 64)
+- `--image_size` (default: 128)
+- `--lr` (default: 1e-2)
 
 ## 📌 Modules
 

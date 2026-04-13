@@ -9,7 +9,6 @@ from pytorch3d.renderer import (
     MeshRenderer,
     RasterizationSettings,
     SoftSilhouetteShader,
-    look_at_view_transform,
 )
 from pytorch3d.structures import Meshes
 
@@ -25,9 +24,6 @@ class PyTorch3DSilhouetteRenderer(nn.Module):
         super().__init__()
         self.image_size = image_size
 
-        r, t = look_at_view_transform(dist=2.7, elev=10.0, azim=20.0)
-        cameras = FoVPerspectiveCameras(R=r, T=t, device=device)
-
         blend_params = BlendParams(sigma=sigma, gamma=1e-4)
         blur_radius = math.log(1.0 / 1e-4 - 1.0) * sigma
         raster_settings = RasterizationSettings(
@@ -37,16 +33,27 @@ class PyTorch3DSilhouetteRenderer(nn.Module):
         )
 
         self.renderer = MeshRenderer(
-            rasterizer=MeshRasterizer(cameras=cameras, raster_settings=raster_settings),
+            rasterizer=MeshRasterizer(raster_settings=raster_settings),
             shader=SoftSilhouetteShader(blend_params=blend_params),
         )
+        self.device = device
 
-    def forward(self, verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        verts: torch.Tensor,
+        faces: torch.Tensor,
+        cameras: FoVPerspectiveCameras,
+    ) -> torch.Tensor:
         if verts.ndim != 2 or verts.size(-1) != 3:
             raise ValueError("verts must have shape [V, 3]")
         if faces.ndim != 2 or faces.size(-1) != 3:
             raise ValueError("faces must have shape [F, 3]")
+        if len(cameras) < 1:
+            raise ValueError("cameras must contain at least one view")
 
-        meshes = Meshes(verts=[verts], faces=[faces])
-        rendered = self.renderer(meshes)
-        return rendered[..., 3].squeeze(0)
+        view_count = len(cameras)
+        verts_batch = [verts for _ in range(view_count)]
+        faces_batch = [faces for _ in range(view_count)]
+        meshes = Meshes(verts=verts_batch, faces=faces_batch)
+        rendered = self.renderer(meshes_world=meshes, cameras=cameras)
+        return rendered[..., 3]
