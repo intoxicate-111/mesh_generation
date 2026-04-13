@@ -38,26 +38,26 @@ We use covariance to approximate:
 ## 🏗️ Project Structure
 
 ```text
-project/
+.
+├── main.py
+├── render_obj_views.py
+├── data/
+│   ├── multiview_dataset.py
+│   └── views.json (generated or user-provided)
 ├── models/
 │   ├── point_representation.py
 │   ├── covariance.py
-│
 ├── geometry/
 │   ├── spatial_blocks.py
 │   ├── edge_weights.py
 │   ├── mesh_builder.py
-│
 ├── rendering/
-│   ├── renderer.py
-│
+│   └── renderer.py
 ├── training/
-│   ├── train.py
-│
+│   └── train.py
 ├── utils/
-│   ├── math_utils.py
-│
-└── README.md
+│   └── math_utils.py
+└── ReadMe.md
 ```
 
 ## 🔧 Installation
@@ -77,8 +77,13 @@ Requirements:
 Run training:
 
 ```bash
-cd project
-python -m training.train --views_json ./data/views.json
+python main.py --views_json ./data/views.json
+```
+
+Generate training views from an OBJ mesh:
+
+```bash
+python render_obj_views.py --obj_path ./assets/mesh.obj --output_dir ./data --num_views 24
 ```
 
 `views.json` format (N views with camera poses):
@@ -111,11 +116,11 @@ Notes:
 
 Saved outputs (auto-generated):
 
-- `project/outputs/target.pt`
-- `project/outputs/checkpoint_final.pt`
-- `project/outputs/masks_final.pt`
-- `project/outputs/mesh_final.obj`
-- `project/outputs/loss_history.csv`
+- `outputs/target.pt`
+- `outputs/checkpoint_final.pt`
+- `outputs/masks_final.pt`
+- `outputs/mesh_final.obj`
+- `outputs/loss_history.csv`
 
 Additional CLI options:
 
